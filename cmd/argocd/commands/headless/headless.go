@@ -8,34 +8,37 @@ import (
 	"sync"
 	"time"
 
-	"github.com/spf13/cobra"
-
-	"github.com/argoproj/argo-cd/v2/cmd/argocd/commands/initialize"
-	"github.com/argoproj/argo-cd/v2/common"
-
 	"github.com/alicebob/miniredis/v2"
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/redis/go-redis/v9"
 	log "github.com/sirupsen/logrus"
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"k8s.io/apimachinery/pkg/util/runtime"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	runtimeUtil "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	cache2 "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/argoproj/argo-cd/v2/pkg/apiclient"
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	appclientset "github.com/argoproj/argo-cd/v2/pkg/client/clientset/versioned"
-	repoapiclient "github.com/argoproj/argo-cd/v2/reposerver/apiclient"
-	"github.com/argoproj/argo-cd/v2/server"
-	servercache "github.com/argoproj/argo-cd/v2/server/cache"
-	"github.com/argoproj/argo-cd/v2/util/cache"
-	appstatecache "github.com/argoproj/argo-cd/v2/util/cache/appstate"
-	"github.com/argoproj/argo-cd/v2/util/cli"
-	"github.com/argoproj/argo-cd/v2/util/io"
-	kubeutil "github.com/argoproj/argo-cd/v2/util/kube"
-	"github.com/argoproj/argo-cd/v2/util/localconfig"
+	"github.com/argoproj/argo-cd/v3/cmd/argocd/commands/initialize"
+	"github.com/argoproj/argo-cd/v3/common"
+	"github.com/argoproj/argo-cd/v3/pkg/apiclient"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	appclientset "github.com/argoproj/argo-cd/v3/pkg/client/clientset/versioned"
+	repoapiclient "github.com/argoproj/argo-cd/v3/reposerver/apiclient"
+	"github.com/argoproj/argo-cd/v3/server"
+	servercache "github.com/argoproj/argo-cd/v3/server/cache"
+	"github.com/argoproj/argo-cd/v3/util/cache"
+	appstatecache "github.com/argoproj/argo-cd/v3/util/cache/appstate"
+	"github.com/argoproj/argo-cd/v3/util/cli"
+	"github.com/argoproj/argo-cd/v3/util/io"
+	kubeutil "github.com/argoproj/argo-cd/v3/util/kube"
+	"github.com/argoproj/argo-cd/v3/util/localconfig"
 )
 
 type forwardCacheClient struct {
@@ -47,6 +50,7 @@ type forwardCacheClient struct {
 	err              error
 	redisHaProxyName string
 	redisName        string
+	redisPassword    string
 }
 
 func (c *forwardCacheClient) doLazy(action func(client cache.CacheClient) error) error {
@@ -63,7 +67,7 @@ func (c *forwardCacheClient) doLazy(action func(client cache.CacheClient) error)
 			return
 		}
 
-		redisClient := redis.NewClient(&redis.Options{Addr: fmt.Sprintf("localhost:%d", redisPort)})
+		redisClient := redis.NewClient(&redis.Options{Addr: fmt.Sprintf("localhost:%d", redisPort), Password: c.redisPassword})
 		c.client = cache.NewRedisCache(redisClient, time.Hour, c.compression)
 	})
 	if c.err != nil {
@@ -84,7 +88,7 @@ func (c *forwardCacheClient) Rename(oldKey string, newKey string, expiration tim
 	})
 }
 
-func (c *forwardCacheClient) Get(key string, obj interface{}) error {
+func (c *forwardCacheClient) Get(key string, obj any) error {
 	return c.doLazy(func(client cache.CacheClient) error {
 		return client.Get(key, obj)
 	})
@@ -115,6 +119,7 @@ type forwardRepoClientset struct {
 	repoClientset  repoapiclient.Clientset
 	err            error
 	repoServerName string
+	kubeClientset  kubernetes.Interface
 }
 
 func (c *forwardRepoClientset) NewRepoServerClient() (io.Closer, repoapiclient.RepoServerServiceClient, error) {
@@ -122,14 +127,27 @@ func (c *forwardRepoClientset) NewRepoServerClient() (io.Closer, repoapiclient.R
 		overrides := clientcmd.ConfigOverrides{
 			CurrentContext: c.context,
 		}
-		repoServerPodLabelSelector := common.LabelKeyAppName + "=" + c.repoServerName
+		repoServerName := c.repoServerName
+		repoServererviceLabelSelector := common.LabelKeyComponentRepoServer + "=" + common.LabelValueComponentRepoServer
+		repoServerServices, err := c.kubeClientset.CoreV1().Services(c.namespace).List(context.Background(), metav1.ListOptions{LabelSelector: repoServererviceLabelSelector})
+		if err != nil {
+			c.err = err
+			return
+		}
+		if len(repoServerServices.Items) > 0 {
+			if repoServerServicelabel, ok := repoServerServices.Items[0].Labels[common.LabelKeyAppName]; ok && repoServerServicelabel != "" {
+				repoServerName = repoServerServicelabel
+			}
+		}
+		repoServerPodLabelSelector := common.LabelKeyAppName + "=" + repoServerName
 		repoServerPort, err := kubeutil.PortForward(8081, c.namespace, &overrides, repoServerPodLabelSelector)
 		if err != nil {
 			c.err = err
 			return
 		}
 		c.repoClientset = repoapiclient.NewRepoServerClientset(fmt.Sprintf("localhost:%d", repoServerPort), 60, repoapiclient.TLSConfiguration{
-			DisableTLS: false, StrictValidation: false})
+			DisableTLS: false, StrictValidation: false,
+		})
 	})
 	if c.err != nil {
 		return nil, nil, c.err
@@ -186,15 +204,15 @@ func MaybeStartLocalServer(ctx context.Context, clientOpts *apiclient.ClientOpti
 	}
 
 	// get rid of logging error handler
-	runtime.ErrorHandlers = runtime.ErrorHandlers[1:]
+	runtimeUtil.ErrorHandlers = runtimeUtil.ErrorHandlers[1:]
 	cli.SetLogLevel(log.ErrorLevel.String())
 	log.SetLevel(log.ErrorLevel)
 	os.Setenv(v1alpha1.EnvVarFakeInClusterConfig, "true")
 	if address == nil {
-		address = pointer.String("localhost")
+		address = ptr.To("localhost")
 	}
 	if port == nil || *port == 0 {
-		addr := fmt.Sprintf("%s:0", *address)
+		addr := *address + ":0"
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("failed to listen on %q: %w", addr, err)
@@ -216,6 +234,28 @@ func MaybeStartLocalServer(ctx context.Context, clientOpts *apiclient.ClientOpti
 		return fmt.Errorf("error creating kubernetes clientset: %w", err)
 	}
 
+	dynamicClientset, err := dynamic.NewForConfig(restConfig)
+	if err != nil {
+		return fmt.Errorf("error creating kubernetes dynamic clientset: %w", err)
+	}
+
+	scheme := runtime.NewScheme()
+	err = v1alpha1.AddToScheme(scheme)
+	if err != nil {
+		return fmt.Errorf("error adding argo resources to scheme: %w", err)
+	}
+	err = corev1.AddToScheme(scheme)
+	if err != nil {
+		return fmt.Errorf("error adding corev1 resources to scheme: %w", err)
+	}
+	controllerClientset, err := client.New(restConfig, client.Options{
+		Scheme: scheme,
+	})
+	if err != nil {
+		return fmt.Errorf("error creating kubernetes controller clientset: %w", err)
+	}
+	controllerClientset = client.NewDryRunClient(controllerClientset)
+
 	namespace, _, err := clientConfig.Namespace()
 	if err != nil {
 		return fmt.Errorf("error getting namespace: %w", err)
@@ -225,21 +265,28 @@ func MaybeStartLocalServer(ctx context.Context, clientOpts *apiclient.ClientOpti
 	if err != nil {
 		return fmt.Errorf("error running miniredis: %w", err)
 	}
-	appstateCache := appstatecache.NewCache(cache.NewCache(&forwardCacheClient{namespace: namespace, context: ctxStr, compression: compression, redisHaProxyName: clientOpts.RedisHaProxyName, redisName: clientOpts.RedisName}), time.Hour)
+	redisOptions := &redis.Options{Addr: mr.Addr()}
+	if err = common.SetOptionalRedisPasswordFromKubeConfig(ctx, kubeClientset, namespace, redisOptions); err != nil {
+		log.Warnf("Failed to fetch & set redis password for namespace %s: %v", namespace, err)
+	}
+
+	appstateCache := appstatecache.NewCache(cache.NewCache(&forwardCacheClient{namespace: namespace, context: ctxStr, compression: compression, redisHaProxyName: clientOpts.RedisHaProxyName, redisName: clientOpts.RedisName, redisPassword: redisOptions.Password}), time.Hour)
 	srv := server.NewServer(ctx, server.ArgoCDServerOpts{
-		EnableGZip:           false,
-		Namespace:            namespace,
-		ListenPort:           *port,
-		AppClientset:         appClientset,
-		DisableAuth:          true,
-		RedisClient:          redis.NewClient(&redis.Options{Addr: mr.Addr()}),
-		Cache:                servercache.NewCache(appstateCache, 0, 0, 0),
-		KubeClientset:        kubeClientset,
-		Insecure:             true,
-		ListenHost:           *address,
-		RepoClientset:        &forwardRepoClientset{namespace: namespace, context: ctxStr, repoServerName: clientOpts.RepoServerName},
-		EnableProxyExtension: false,
-	})
+		EnableGZip:              false,
+		Namespace:               namespace,
+		ListenPort:              *port,
+		AppClientset:            appClientset,
+		DisableAuth:             true,
+		RedisClient:             redis.NewClient(redisOptions),
+		Cache:                   servercache.NewCache(appstateCache, 0, 0, 0),
+		KubeClientset:           kubeClientset,
+		DynamicClientset:        dynamicClientset,
+		KubeControllerClientset: controllerClientset,
+		Insecure:                true,
+		ListenHost:              *address,
+		RepoClientset:           &forwardRepoClientset{namespace: namespace, context: ctxStr, repoServerName: clientOpts.RepoServerName, kubeClientset: kubeClientset},
+		EnableProxyExtension:    false,
+	}, server.ApplicationSetOpts{})
 	srv.Init(ctx)
 
 	lns, err := srv.Listen()

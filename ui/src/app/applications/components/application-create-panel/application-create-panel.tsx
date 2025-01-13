@@ -1,3 +1,4 @@
+/* eslint-disable no-prototype-builtins */
 import {AutocompleteField, Checkbox, DataLoader, DropDownMenu, FormField, HelpIcon, Select} from 'argo-ui';
 import * as deepMerge from 'deepmerge';
 import * as React from 'react';
@@ -12,6 +13,7 @@ import {RevisionFormField} from '../revision-form-field/revision-form-field';
 import {SetFinalizerOnApplication} from './set-finalizer-on-application';
 import './application-create-panel.scss';
 import {getAppDefaultSource} from '../utils';
+import {debounce} from 'lodash-es';
 
 const jsonMergePatch = require('json-merge-patch');
 
@@ -30,9 +32,9 @@ const DEFAULT_APP: Partial<models.Application> = {
     },
     spec: {
         destination: {
-            name: '',
+            name: undefined,
             namespace: '',
-            server: ''
+            server: undefined
         },
         source: {
             path: '',
@@ -106,17 +108,22 @@ export const ApplicationCreatePanel = (props: {
 }) => {
     const [yamlMode, setYamlMode] = React.useState(false);
     const [explicitPathType, setExplicitPathType] = React.useState<{path: string; type: models.AppSourceType}>(null);
-    const [destFormat, setDestFormat] = React.useState('URL');
     const [retry, setRetry] = React.useState(false);
     const app = deepMerge(DEFAULT_APP, props.app || {});
+    const debouncedOnAppChanged = debounce(props.onAppChanged, 800);
+    const [destinationFieldChanges, setDestinationFieldChanges] = React.useState({destFormat: 'URL', destFormatChanged: null});
+    const comboSwitchedFromPanel = React.useRef(false);
+    let destinationComboValue = destinationFieldChanges.destFormat;
 
     React.useEffect(() => {
-        if (app?.spec?.destination?.name && app.spec.destination.name !== '') {
-            setDestFormat('NAME');
-        } else {
-            setDestFormat('URL');
-        }
+        comboSwitchedFromPanel.current = false;
     }, []);
+
+    React.useEffect(() => {
+        return () => {
+            debouncedOnAppChanged.cancel();
+        };
+    }, [debouncedOnAppChanged]);
 
     function normalizeTypeFields(formApi: FormApi, type: models.AppSourceType) {
         const appToNormalize = formApi.getFormState().values;
@@ -126,6 +133,41 @@ export const ApplicationCreatePanel = (props: {
             }
         }
         formApi.setAllValues(appToNormalize);
+    }
+
+    const currentName = app.spec.destination.name;
+    const currentServer = app.spec.destination.server;
+    if (destinationFieldChanges.destFormatChanged !== null) {
+        if (destinationComboValue == 'NAME') {
+            if (currentName === undefined && currentServer !== undefined && comboSwitchedFromPanel.current === false) {
+                destinationComboValue = 'URL';
+            } else {
+                delete app.spec.destination.server;
+                if (currentName === undefined) {
+                    app.spec.destination.name = '';
+                }
+            }
+        } else {
+            if (currentServer === undefined && currentName !== undefined && comboSwitchedFromPanel.current === false) {
+                destinationComboValue = 'NAME';
+            } else {
+                delete app.spec.destination.name;
+                if (currentServer === undefined) {
+                    app.spec.destination.server = '';
+                }
+            }
+        }
+    } else {
+        if (currentName === undefined && currentServer === undefined) {
+            destinationComboValue = destinationFieldChanges.destFormat;
+            app.spec.destination.server = '';
+        } else {
+            if (currentName != undefined) {
+                destinationComboValue = 'NAME';
+            } else {
+                destinationComboValue = 'URL';
+            }
+        }
     }
 
     return (
@@ -180,7 +222,7 @@ export const ApplicationCreatePanel = (props: {
                                             'Cluster name is required'
                                     })}
                                     defaultValues={app}
-                                    formDidUpdate={state => props.onAppChanged(state.values as any)}
+                                    formDidUpdate={state => debouncedOnAppChanged(state.values as any)}
                                     onSubmit={props.createApp}
                                     getApi={props.getFormApi}>
                                     {api => {
@@ -370,7 +412,7 @@ export const ApplicationCreatePanel = (props: {
                                             <div className='white-box'>
                                                 <p>DESTINATION</p>
                                                 <div className='row argo-form-row'>
-                                                    {(destFormat.toUpperCase() === 'URL' && (
+                                                    {(destinationComboValue.toUpperCase() === 'URL' && (
                                                         <div className='columns small-10'>
                                                             <FormField
                                                                 formApi={api}
@@ -398,22 +440,17 @@ export const ApplicationCreatePanel = (props: {
                                                             <DropDownMenu
                                                                 anchor={() => (
                                                                     <p>
-                                                                        {destFormat} <i className='fa fa-caret-down' />
+                                                                        {destinationComboValue} <i className='fa fa-caret-down' />
                                                                     </p>
                                                                 )}
                                                                 qeId='application-create-dropdown-destination'
                                                                 items={['URL', 'NAME'].map((type: 'URL' | 'NAME') => ({
                                                                     title: type,
                                                                     action: () => {
-                                                                        if (destFormat !== type) {
-                                                                            const updatedApp = api.getFormState().values as models.Application;
-                                                                            if (type === 'URL') {
-                                                                                delete updatedApp.spec.destination.name;
-                                                                            } else {
-                                                                                delete updatedApp.spec.destination.server;
-                                                                            }
-                                                                            api.setAllValues(updatedApp);
-                                                                            setDestFormat(type);
+                                                                        if (destinationComboValue !== type) {
+                                                                            destinationComboValue = type;
+                                                                            comboSwitchedFromPanel.current = true;
+                                                                            setDestinationFieldChanges({destFormat: type, destFormatChanged: 'changed'});
                                                                         }
                                                                     }
                                                                 }))}
@@ -444,7 +481,7 @@ export const ApplicationCreatePanel = (props: {
                                                 }}
                                                 load={async src => {
                                                     if (src.repoURL && src.targetRevision && (src.path || src.chart)) {
-                                                        return services.repos.appDetails(src, src.appName, app.spec.project).catch(() => ({
+                                                        return services.repos.appDetails(src, src.appName, app.spec.project, 0, 0).catch(() => ({
                                                             type: 'Directory',
                                                             details: {}
                                                         }));

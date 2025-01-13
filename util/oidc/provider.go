@@ -11,8 +11,8 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
 
-	"github.com/argoproj/argo-cd/v2/util/security"
-	"github.com/argoproj/argo-cd/v2/util/settings"
+	"github.com/argoproj/argo-cd/v3/util/security"
+	"github.com/argoproj/argo-cd/v3/util/settings"
 )
 
 // Provider is a wrapper around go-oidc provider to also provide the following features:
@@ -66,7 +66,7 @@ func (p *providerImpl) newGoOIDCProvider() (*gooidc.Provider, error) {
 	ctx := gooidc.ClientContext(context.Background(), p.client)
 	prov, err := gooidc.NewProvider(ctx, p.issuerURL)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to query provider %q: %v", p.issuerURL, err)
+		return nil, fmt.Errorf("Failed to query provider %q: %w", p.issuerURL, err)
 	}
 	s, _ := ParseConfig(prov)
 	log.Infof("OIDC supported scopes: %v", s.ScopesSupported)
@@ -82,7 +82,7 @@ func (t tokenVerificationError) Error() string {
 	for aud, err := range t.errorsByAudience {
 		errorStrings = append(errorStrings, fmt.Sprintf("error for aud %q: %v", aud, err))
 	}
-	return fmt.Sprintf("token verification failed for all audiences: %s", strings.Join(errorStrings, ", "))
+	return "token verification failed for all audiences: " + strings.Join(errorStrings, ", ")
 }
 
 func (p *providerImpl) Verify(tokenString string, argoSettings *settings.ArgoCDSettings) (*gooidc.IDToken, error) {
@@ -135,7 +135,9 @@ func (p *providerImpl) Verify(tokenString string, argoSettings *settings.ArgoCDS
 			// to avoid logging irrelevant warnings: https://github.com/coreos/go-oidc/pull/406
 			tokenVerificationErrors[aud] = err
 		}
-		if len(tokenVerificationErrors) > 0 {
+		// If the most recent attempt encountered an error, and if we have collected multiple errors, switch to the
+		// other error type to gather more context.
+		if err != nil && len(tokenVerificationErrors) > 0 {
 			err = tokenVerificationError{errorsByAudience: tokenVerificationErrors}
 		}
 	}

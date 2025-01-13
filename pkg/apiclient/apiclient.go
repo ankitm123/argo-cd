@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/golang/protobuf/ptypes/empty"
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
@@ -30,30 +30,30 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/argoproj/argo-cd/v2/common"
-	accountpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/account"
-	applicationpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/application"
-	applicationsetpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/applicationset"
-	certificatepkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/certificate"
-	clusterpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/cluster"
-	gpgkeypkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/gpgkey"
-	notificationpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/notification"
-	projectpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/project"
-	repocredspkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/repocreds"
-	repositorypkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/repository"
-	sessionpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/session"
-	settingspkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/settings"
-	versionpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/version"
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	"github.com/argoproj/argo-cd/v2/util/argo"
-	"github.com/argoproj/argo-cd/v2/util/env"
-	grpc_util "github.com/argoproj/argo-cd/v2/util/grpc"
-	http_util "github.com/argoproj/argo-cd/v2/util/http"
-	argoio "github.com/argoproj/argo-cd/v2/util/io"
-	"github.com/argoproj/argo-cd/v2/util/kube"
-	"github.com/argoproj/argo-cd/v2/util/localconfig"
-	oidcutil "github.com/argoproj/argo-cd/v2/util/oidc"
-	tls_util "github.com/argoproj/argo-cd/v2/util/tls"
+	"github.com/argoproj/argo-cd/v3/common"
+	accountpkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/account"
+	applicationpkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/application"
+	applicationsetpkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/applicationset"
+	certificatepkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/certificate"
+	clusterpkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/cluster"
+	gpgkeypkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/gpgkey"
+	notificationpkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/notification"
+	projectpkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/project"
+	repocredspkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/repocreds"
+	repositorypkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/repository"
+	sessionpkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/session"
+	settingspkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/settings"
+	versionpkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/version"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/util/argo"
+	"github.com/argoproj/argo-cd/v3/util/env"
+	grpc_util "github.com/argoproj/argo-cd/v3/util/grpc"
+	http_util "github.com/argoproj/argo-cd/v3/util/http"
+	argoio "github.com/argoproj/argo-cd/v3/util/io"
+	"github.com/argoproj/argo-cd/v3/util/kube"
+	"github.com/argoproj/argo-cd/v3/util/localconfig"
+	oidcutil "github.com/argoproj/argo-cd/v3/util/oidc"
+	tls_util "github.com/argoproj/argo-cd/v3/util/tls"
 )
 
 const (
@@ -62,14 +62,10 @@ const (
 	EnvArgoCDServer = "ARGOCD_SERVER"
 	// EnvArgoCDAuthToken is the environment variable to look for an Argo CD auth token
 	EnvArgoCDAuthToken = "ARGOCD_AUTH_TOKEN"
-	// EnvArgoCDgRPCMaxSizeMB is the environment variable to look for a max gRPC message size
-	EnvArgoCDgRPCMaxSizeMB = "ARGOCD_GRPC_MAX_SIZE_MB"
 )
 
-var (
-	// MaxGRPCMessageSize contains max grpc message size
-	MaxGRPCMessageSize = env.ParseNumFromEnv(EnvArgoCDgRPCMaxSizeMB, 200, 0, math.MaxInt32) * 1024 * 1024
-)
+// MaxGRPCMessageSize contains max grpc message size
+var MaxGRPCMessageSize = env.ParseNumFromEnv(common.EnvGRPCMaxSizeMB, 200, 0, math.MaxInt32) * 1024 * 1024
 
 // Client defines an interface for interaction with an Argo CD server.
 type Client interface {
@@ -130,6 +126,7 @@ type ClientOptions struct {
 	RedisHaProxyName     string
 	RedisName            string
 	RepoServerName       string
+	PromptsEnabled       bool
 }
 
 type client struct {
@@ -338,11 +335,11 @@ func (c *client) OIDCConfig(ctx context.Context, set *settingspkg.Settings) (*oa
 	}
 	provider, err := oidc.NewProvider(ctx, issuerURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to query provider %q: %v", issuerURL, err)
+		return nil, nil, fmt.Errorf("Failed to query provider %q: %w", issuerURL, err)
 	}
 	oidcConf, err := oidcutil.ParseConfig(provider)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to parse provider config: %v", err)
+		return nil, nil, fmt.Errorf("Failed to parse provider config: %w", err)
 	}
 	scopes = oidcutil.GetScopesOrDefault(scopes)
 	if oidcutil.OfflineAccess(oidcConf.ScopesSupported) {
@@ -405,7 +402,8 @@ func (c *client) refreshAuthToken(localCfg *localconfig.LocalConfig, ctxName, co
 	if err != nil {
 		return err
 	}
-	if claims.Valid() == nil {
+	validator := jwt.NewValidator()
+	if validator.Validate(claims) == nil {
 		// token is still valid
 		return nil
 	}
@@ -561,7 +559,7 @@ func (c *client) tlsConfig() (*tls.Config, error) {
 	if len(c.CertPEMData) > 0 {
 		cp := tls_util.BestEffortSystemCertPool()
 		if !cp.AppendCertsFromPEM(c.CertPEMData) {
-			return nil, fmt.Errorf("credentials: failed to append certificates")
+			return nil, errors.New("credentials: failed to append certificates")
 		}
 		tlsConfig.RootCAs = cp
 	}
@@ -849,7 +847,7 @@ func (c *client) WatchApplicationWithRetry(ctx context.Context, appName string, 
 }
 
 func isCanceledContextErr(err error) bool {
-	if err == context.Canceled {
+	if err != nil && errors.Is(err, context.Canceled) {
 		return true
 	}
 	if stat, ok := status.FromError(err); ok {

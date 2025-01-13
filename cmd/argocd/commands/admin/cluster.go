@@ -14,34 +14,34 @@ import (
 	"github.com/redis/go-redis/v9"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
-	cmdutil "github.com/argoproj/argo-cd/v2/cmd/util"
-	"github.com/argoproj/argo-cd/v2/common"
-	"github.com/argoproj/argo-cd/v2/controller/sharding"
-	argocdclient "github.com/argoproj/argo-cd/v2/pkg/apiclient"
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	"github.com/argoproj/argo-cd/v2/pkg/client/clientset/versioned"
-	"github.com/argoproj/argo-cd/v2/util/argo"
-	cacheutil "github.com/argoproj/argo-cd/v2/util/cache"
-	appstatecache "github.com/argoproj/argo-cd/v2/util/cache/appstate"
-	"github.com/argoproj/argo-cd/v2/util/cli"
-	"github.com/argoproj/argo-cd/v2/util/clusterauth"
-	"github.com/argoproj/argo-cd/v2/util/db"
-	"github.com/argoproj/argo-cd/v2/util/errors"
-	"github.com/argoproj/argo-cd/v2/util/glob"
-	kubeutil "github.com/argoproj/argo-cd/v2/util/kube"
-	"github.com/argoproj/argo-cd/v2/util/settings"
-	"github.com/argoproj/argo-cd/v2/util/text/label"
+	cmdutil "github.com/argoproj/argo-cd/v3/cmd/util"
+	"github.com/argoproj/argo-cd/v3/common"
+	"github.com/argoproj/argo-cd/v3/controller/sharding"
+	argocdclient "github.com/argoproj/argo-cd/v3/pkg/apiclient"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/pkg/client/clientset/versioned"
+	"github.com/argoproj/argo-cd/v3/util/argo"
+	cacheutil "github.com/argoproj/argo-cd/v3/util/cache"
+	appstatecache "github.com/argoproj/argo-cd/v3/util/cache/appstate"
+	"github.com/argoproj/argo-cd/v3/util/cli"
+	"github.com/argoproj/argo-cd/v3/util/clusterauth"
+	"github.com/argoproj/argo-cd/v3/util/db"
+	"github.com/argoproj/argo-cd/v3/util/errors"
+	"github.com/argoproj/argo-cd/v3/util/glob"
+	kubeutil "github.com/argoproj/argo-cd/v3/util/kube"
+	"github.com/argoproj/argo-cd/v3/util/settings"
+	"github.com/argoproj/argo-cd/v3/util/text/label"
 )
 
 func NewClusterCommand(clientOpts *argocdclient.ClientOptions, pathOpts *clientcmd.PathOptions) *cobra.Command {
-	var command = &cobra.Command{
+	command := &cobra.Command{
 		Use:   "cluster",
 		Short: "Manage clusters configuration",
 		Example: `
@@ -78,7 +78,7 @@ type ClusterWithInfo struct {
 	Namespaces []string
 }
 
-func loadClusters(ctx context.Context, kubeClient *kubernetes.Clientset, appClient *versioned.Clientset, replicas int, shardingAlgorithm string, namespace string, portForwardRedis bool, cacheSrc func() (*appstatecache.Cache, error), shard int, redisName string, redisHaProxyName string, redisCompressionStr string) ([]ClusterWithInfo, error) {
+func loadClusters(ctx context.Context, kubeClient kubernetes.Interface, appClient versioned.Interface, replicas int, shardingAlgorithm string, namespace string, portForwardRedis bool, cacheSrc func() (*appstatecache.Cache, error), shard int, redisName string, redisHaProxyName string, redisCompressionStr string) ([]ClusterWithInfo, error) {
 	settingsMgr := settings.NewSettingsManager(ctx, kubeClient, namespace)
 
 	argoDB := db.NewDB(namespace, settingsMgr, kubeClient)
@@ -86,8 +86,12 @@ func loadClusters(ctx context.Context, kubeClient *kubernetes.Clientset, appClie
 	if err != nil {
 		return nil, err
 	}
+	appItems, err := appClient.ArgoprojV1alpha1().Applications(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
 	clusterShardingCache := sharding.NewClusterSharding(argoDB, shard, replicas, shardingAlgorithm)
-	clusterShardingCache.Init(clustersList)
+	clusterShardingCache.Init(clustersList, appItems)
 	clusterShards := clusterShardingCache.GetDistribution()
 
 	var cache *appstatecache.Cache
@@ -100,7 +104,12 @@ func loadClusters(ctx context.Context, kubeClient *kubernetes.Clientset, appClie
 		if err != nil {
 			return nil, err
 		}
-		client := redis.NewClient(&redis.Options{Addr: fmt.Sprintf("localhost:%d", port)})
+
+		redisOptions := &redis.Options{Addr: fmt.Sprintf("localhost:%d", port)}
+		if err = common.SetOptionalRedisPasswordFromKubeConfig(ctx, kubeClient, namespace, redisOptions); err != nil {
+			log.Warnf("Failed to fetch & set redis password for namespace %s: %v", namespace, err)
+		}
+		client := redis.NewClient(redisOptions)
 		compressionType, err := cacheutil.CompressionTypeFromString(redisCompressionStr)
 		if err != nil {
 			return nil, err
@@ -113,28 +122,11 @@ func loadClusters(ctx context.Context, kubeClient *kubernetes.Clientset, appClie
 		}
 	}
 
-	appItems, err := appClient.ArgoprojV1alpha1().Applications(namespace).List(ctx, v1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
 	apps := appItems.Items
-	for i, app := range apps {
-		err := argo.ValidateDestination(ctx, &app.Spec.Destination, argoDB)
-		if err != nil {
-			return nil, err
-		}
-		apps[i] = app
-	}
 	clusters := make([]ClusterWithInfo, len(clustersList.Items))
 
 	batchSize := 10
 	batchesCount := int(math.Ceil(float64(len(clusters)) / float64(batchSize)))
-	clusterSharding := &sharding.ClusterSharding{
-		Shard:    shard,
-		Replicas: replicas,
-		Shards:   make(map[string]int),
-		Clusters: make(map[string]*v1alpha1.Cluster),
-	}
 	for batchNum := 0; batchNum < batchesCount; batchNum++ {
 		batchStart := batchSize * batchNum
 		batchEnd := batchSize * (batchNum + 1)
@@ -146,10 +138,8 @@ func loadClusters(ctx context.Context, kubeClient *kubernetes.Clientset, appClie
 			clusterShard := 0
 			cluster := batch[i]
 			if replicas > 0 {
-				distributionFunction := sharding.GetDistributionFunction(clusterSharding.GetClusterAccessor(), common.DefaultShardingAlgorithm, replicas)
-				distributionFunction(&cluster)
-				clusterShard := clusterShards[cluster.Server]
-				cluster.Shard = pointer.Int64(int64(clusterShard))
+				clusterShard = clusterShards[cluster.Server]
+				cluster.Shard = ptr.To(int64(clusterShard))
 				log.Infof("Cluster with uid: %s will be processed by shard %d", cluster.ID, clusterShard)
 			}
 			if shard != -1 && clusterShard != shard {
@@ -157,7 +147,11 @@ func loadClusters(ctx context.Context, kubeClient *kubernetes.Clientset, appClie
 			}
 			nsSet := map[string]bool{}
 			for _, app := range apps {
-				if app.Spec.Destination.Server == cluster.Server {
+				destCluster, err := argo.GetDestinationCluster(ctx, app.Spec.Destination, argoDB)
+				if err != nil {
+					return fmt.Errorf("error validating application destination: %w", err)
+				}
+				if destCluster.Server == cluster.Server {
 					nsSet[app.Spec.Destination.Namespace] = true
 				}
 			}
@@ -175,8 +169,9 @@ func loadClusters(ctx context.Context, kubeClient *kubernetes.Clientset, appClie
 
 func getControllerReplicas(ctx context.Context, kubeClient *kubernetes.Clientset, namespace string, appControllerName string) (int, error) {
 	appControllerPodLabelSelector := common.LabelKeyAppName + "=" + appControllerName
-	controllerPods, err := kubeClient.CoreV1().Pods(namespace).List(ctx, v1.ListOptions{
-		LabelSelector: appControllerPodLabelSelector})
+	controllerPods, err := kubeClient.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: appControllerPodLabelSelector,
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -193,10 +188,10 @@ func NewClusterShardsCommand(clientOpts *argocdclient.ClientOptions) *cobra.Comm
 		portForwardRedis    bool
 		redisCompressionStr string
 	)
-	var command = cobra.Command{
+	command := cobra.Command{
 		Use:   "shards",
 		Short: "Print information about each controller shard and the estimated portion of Kubernetes resources it is responsible for.",
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, _ []string) {
 			ctx := cmd.Context()
 
 			log.SetLevel(log.WarnLevel)
@@ -227,7 +222,7 @@ func NewClusterShardsCommand(clientOpts *argocdclient.ClientOptions) *cobra.Comm
 	clientConfig = cli.AddKubectlFlagsToCmd(&command)
 	command.Flags().IntVar(&shard, "shard", -1, "Cluster shard filter")
 	command.Flags().IntVar(&replicas, "replicas", 0, "Application controller replicas count. Inferred from number of running controller pods if not specified")
-	command.Flags().StringVar(&shardingAlgorithm, "sharding-method", common.DefaultShardingAlgorithm, "Sharding method. Defaults: legacy. Supported sharding methods are : [legacy, round-robin] ")
+	command.Flags().StringVar(&shardingAlgorithm, "sharding-method", common.DefaultShardingAlgorithm, "Sharding method. Defaults: legacy. Supported sharding methods are : [legacy, round-robin, consistent-hashing] ")
 	command.Flags().BoolVar(&portForwardRedis, "port-forward-redis", true, "Automatically port-forward ha proxy redis from current namespace?")
 
 	cacheSrc = appstatecache.AddCacheFlagsToCmd(&command)
@@ -278,23 +273,21 @@ func runClusterNamespacesCommand(ctx context.Context, clientConfig clientcmd.Cli
 	if err != nil {
 		return fmt.Errorf("error listing clusters: %w", err)
 	}
-	appItems, err := appClient.ArgoprojV1alpha1().Applications(namespace).List(ctx, v1.ListOptions{})
+	appItems, err := appClient.ArgoprojV1alpha1().Applications(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("error listing application: %w", err)
 	}
 	apps := appItems.Items
-	for i, app := range apps {
-		if err := argo.ValidateDestination(ctx, &app.Spec.Destination, argoDB); err != nil {
-			return fmt.Errorf("error validating application destination: %w", err)
-		}
-		apps[i] = app
-	}
-
 	clusters := map[string][]string{}
 	for _, cluster := range clustersList.Items {
 		nsSet := map[string]bool{}
 		for _, app := range apps {
-			if app.Spec.Destination.Server != cluster.Server {
+			destCluster, err := argo.GetDestinationCluster(ctx, app.Spec.Destination, argoDB)
+			if err != nil {
+				return fmt.Errorf("error validating application destination: %w", err)
+			}
+
+			if destCluster.Server != cluster.Server {
 				continue
 			}
 			// Use namespaces of actually deployed resources, since some application use dummy target namespace
@@ -319,18 +312,16 @@ func runClusterNamespacesCommand(ctx context.Context, clientConfig clientcmd.Cli
 }
 
 func NewClusterNamespacesCommand() *cobra.Command {
-	var (
-		clientConfig clientcmd.ClientConfig
-	)
-	var command = cobra.Command{
+	var clientConfig clientcmd.ClientConfig
+	command := cobra.Command{
 		Use:   "namespaces",
 		Short: "Print information namespaces which Argo CD manages in each cluster.",
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, _ []string) {
 			ctx := cmd.Context()
 
 			log.SetLevel(log.WarnLevel)
 
-			err := runClusterNamespacesCommand(ctx, clientConfig, func(appClient *versioned.Clientset, _ db.ArgoDB, clusters map[string][]string) error {
+			err := runClusterNamespacesCommand(ctx, clientConfig, func(_ *versioned.Clientset, _ db.ArgoDB, clusters map[string][]string) error {
 				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 				_, _ = fmt.Fprintf(w, "CLUSTER\tNAMESPACES\n")
 
@@ -365,7 +356,7 @@ func NewClusterEnableNamespacedMode() *cobra.Command {
 		clusterResources bool
 		namespacesCount  int
 	)
-	var command = cobra.Command{
+	command := cobra.Command{
 		Use:   "enable-namespaced-mode PATTERN",
 		Short: "Enable namespaced mode for clusters which name matches to the specified pattern.",
 		Run: func(cmd *cobra.Command, args []string) {
@@ -400,7 +391,6 @@ func NewClusterEnableNamespacedMode() *cobra.Command {
 					} else {
 						fmt.Println("done (dry run)")
 					}
-
 				}
 				return nil
 			}))
@@ -419,7 +409,7 @@ func NewClusterDisableNamespacedMode() *cobra.Command {
 		clientConfig clientcmd.ClientConfig
 		dryRun       bool
 	)
-	var command = cobra.Command{
+	command := cobra.Command{
 		Use:   "disable-namespaced-mode PATTERN",
 		Short: "Disable namespaced mode for clusters which name matches to the specified pattern.",
 		Run: func(cmd *cobra.Command, args []string) {
@@ -459,7 +449,6 @@ func NewClusterDisableNamespacedMode() *cobra.Command {
 					} else {
 						fmt.Println("done (dry run)")
 					}
-
 				}
 				return nil
 			}))
@@ -480,7 +469,7 @@ func NewClusterStatsCommand(clientOpts *argocdclient.ClientOptions) *cobra.Comma
 		portForwardRedis    bool
 		redisCompressionStr string
 	)
-	var command = cobra.Command{
+	command := cobra.Command{
 		Use:   "stats",
 		Short: "Prints information cluster statistics and inferred shard number",
 		Example: `
@@ -492,7 +481,7 @@ argocd admin cluster stats --shard=1
 
 #In a multi-cluster environment to print stats for a specific cluster say(target-cluster)
 argocd admin cluster stats target-cluster`,
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, _ []string) {
 			ctx := cmd.Context()
 
 			log.SetLevel(log.WarnLevel)
@@ -522,7 +511,7 @@ argocd admin cluster stats target-cluster`,
 	clientConfig = cli.AddKubectlFlagsToCmd(&command)
 	command.Flags().IntVar(&shard, "shard", -1, "Cluster shard filter")
 	command.Flags().IntVar(&replicas, "replicas", 0, "Application controller replicas count. Inferred from number of running controller pods if not specified")
-	command.Flags().StringVar(&shardingAlgorithm, "sharding-method", common.DefaultShardingAlgorithm, "Sharding method. Defaults: legacy. Supported sharding methods are : [legacy, round-robin] ")
+	command.Flags().StringVar(&shardingAlgorithm, "sharding-method", common.DefaultShardingAlgorithm, "Sharding method. Defaults: legacy. Supported sharding methods are : [legacy, round-robin, consistent-hashing] ")
 	command.Flags().BoolVar(&portForwardRedis, "port-forward-redis", true, "Automatically port-forward ha proxy redis from current namespace?")
 	cacheSrc = appstatecache.AddCacheFlagsToCmd(&command)
 
@@ -536,10 +525,8 @@ argocd admin cluster stats target-cluster`,
 
 // NewClusterConfig returns a new instance of `argocd admin kubeconfig` command
 func NewClusterConfig() *cobra.Command {
-	var (
-		clientConfig clientcmd.ClientConfig
-	)
-	var command = &cobra.Command{
+	var clientConfig clientcmd.ClientConfig
+	command := &cobra.Command{
 		Use:               "kubeconfig CLUSTER_URL OUTPUT_PATH",
 		Short:             "Generates kubeconfig for the specified cluster",
 		DisableAutoGenTag: true,
@@ -573,7 +560,9 @@ argocd admin cluster kubeconfig https://cluster-api-url:6443 /path/to/output/kub
 
 			cluster, err := db.NewDB(namespace, settings.NewSettingsManager(ctx, kubeclientset, namespace), kubeclientset).GetCluster(ctx, serverUrl)
 			errors.CheckError(err)
-			err = kube.WriteKubeConfig(cluster.RawRestConfig(), namespace, output)
+			rawConfig, err := cluster.RawRestConfig()
+			errors.CheckError(err)
+			err = kube.WriteKubeConfig(rawConfig, namespace, output)
 			errors.CheckError(err)
 		},
 	}
@@ -590,7 +579,7 @@ func NewGenClusterConfigCommand(pathOpts *clientcmd.PathOptions) *cobra.Command 
 		labels        []string
 		annotations   []string
 	)
-	var command = &cobra.Command{
+	command := &cobra.Command{
 		Use:   "generate-spec CONTEXT",
 		Short: "Generate declarative config for a cluster",
 		Run: func(c *cobra.Command, args []string) {
@@ -623,7 +612,7 @@ func NewGenClusterConfigCommand(pathOpts *clientcmd.PathOptions) *cobra.Command 
 			clientConfig := clientcmd.NewDefaultClientConfig(*cfgAccess, &overrides)
 			conf, err := clientConfig.ClientConfig()
 			errors.CheckError(err)
-			kubeClientset := fake.NewSimpleClientset()
+			kubeClientset := fake.NewClientset()
 
 			var awsAuthConf *v1alpha1.AWSAuthConfig
 			var execProviderConf *v1alpha1.ExecProviderConfig
@@ -677,7 +666,7 @@ func NewGenClusterConfigCommand(pathOpts *clientcmd.PathOptions) *cobra.Command 
 			secName, err := db.URIToSecretName("cluster", clst.Server)
 			errors.CheckError(err)
 
-			secret, err := kubeClientset.CoreV1().Secrets(ArgoCDNamespace).Get(ctx, secName, v1.GetOptions{})
+			secret, err := kubeClientset.CoreV1().Secrets(ArgoCDNamespace).Get(ctx, secName, metav1.GetOptions{})
 			errors.CheckError(err)
 
 			errors.CheckError(PrintResources(outputFormat, os.Stdout, secret))
@@ -686,7 +675,7 @@ func NewGenClusterConfigCommand(pathOpts *clientcmd.PathOptions) *cobra.Command 
 	command.PersistentFlags().StringVar(&pathOpts.LoadingRules.ExplicitPath, pathOpts.ExplicitFileFlag, pathOpts.LoadingRules.ExplicitPath, "use a particular kubeconfig file")
 	command.Flags().StringVar(&bearerToken, "bearer-token", "", "Authentication token that should be used to access K8S API server")
 	command.Flags().BoolVar(&generateToken, "generate-bearer-token", false, "Generate authentication token that should be used to access K8S API server")
-	command.Flags().StringVar(&clusterOpts.ServiceAccount, "service-account", "argocd-manager", fmt.Sprintf("System namespace service account to use for kubernetes resource management. If not set then default \"%s\" SA will be used", clusterauth.ArgoCDManagerServiceAccount))
+	command.Flags().StringVar(&clusterOpts.ServiceAccount, "service-account", "argocd-manager", fmt.Sprintf("System namespace service account to use for kubernetes resource management. If not set then default %q SA will be used", clusterauth.ArgoCDManagerServiceAccount))
 	command.Flags().StringVar(&clusterOpts.SystemNamespace, "system-namespace", common.DefaultSystemNamespace, "Use different system namespace")
 	command.Flags().StringVarP(&outputFormat, "output", "o", "yaml", "Output format. One of: json|yaml")
 	command.Flags().StringArrayVar(&labels, "label", nil, "Set metadata labels (e.g. --label key=value)")

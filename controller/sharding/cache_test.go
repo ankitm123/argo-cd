@@ -3,9 +3,10 @@ package sharding
 import (
 	"testing"
 
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	dbmocks "github.com/argoproj/argo-cd/v2/util/db/mocks"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	dbmocks "github.com/argoproj/argo-cd/v3/util/db/mocks"
 )
 
 func setupTestSharding(shard int, replicas int) *ClusterSharding {
@@ -58,7 +59,7 @@ func TestClusterSharding_Add(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, 0, myClusterDistribution)
 
-	assert.Equal(t, 2, len(distribution))
+	assert.Len(t, distribution, 2)
 }
 
 func TestClusterSharding_AddRoundRobin_Redistributes(t *testing.T) {
@@ -94,7 +95,7 @@ func TestClusterSharding_AddRoundRobin_Redistributes(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, 1, clusterDistributionB)
 
-	assert.Equal(t, 2, len(distributionBefore))
+	assert.Len(t, distributionBefore, 2)
 
 	clusterC := v1alpha1.Cluster{
 		ID:     "2",
@@ -139,11 +140,17 @@ func TestClusterSharding_Delete(t *testing.T) {
 				},
 			},
 		},
+		&v1alpha1.ApplicationList{
+			Items: []v1alpha1.Application{
+				createApp("app2", "https://127.0.0.1:6443"),
+				createApp("app1", "https://kubernetes.default.svc"),
+			},
+		},
 	)
 
 	sharding.Delete("https://kubernetes.default.svc")
 	distribution := sharding.GetDistribution()
-	assert.Equal(t, 1, len(distribution))
+	assert.Len(t, distribution, 1)
 }
 
 func TestClusterSharding_Update(t *testing.T) {
@@ -164,10 +171,16 @@ func TestClusterSharding_Update(t *testing.T) {
 				},
 			},
 		},
+		&v1alpha1.ApplicationList{
+			Items: []v1alpha1.Application{
+				createApp("app2", "https://127.0.0.1:6443"),
+				createApp("app1", "https://kubernetes.default.svc"),
+			},
+		},
 	)
 
 	distributionBefore := sharding.GetDistribution()
-	assert.Equal(t, 2, len(distributionBefore))
+	assert.Len(t, distributionBefore, 2)
 
 	distributionA, ok := distributionBefore["https://kubernetes.default.svc"]
 	assert.True(t, ok)
@@ -182,7 +195,7 @@ func TestClusterSharding_Update(t *testing.T) {
 	})
 
 	distributionAfter := sharding.GetDistribution()
-	assert.Equal(t, 2, len(distributionAfter))
+	assert.Len(t, distributionAfter, 2)
 
 	distributionA, ok = distributionAfter["https://kubernetes.default.svc"]
 	assert.True(t, ok)
@@ -207,10 +220,16 @@ func TestClusterSharding_UpdateServerName(t *testing.T) {
 				},
 			},
 		},
+		&v1alpha1.ApplicationList{
+			Items: []v1alpha1.Application{
+				createApp("app2", "https://127.0.0.1:6443"),
+				createApp("app1", "https://kubernetes.default.svc"),
+			},
+		},
 	)
 
 	distributionBefore := sharding.GetDistribution()
-	assert.Equal(t, 2, len(distributionBefore))
+	assert.Len(t, distributionBefore, 2)
 
 	distributionA, ok := distributionBefore["https://kubernetes.default.svc"]
 	assert.True(t, ok)
@@ -225,7 +244,7 @@ func TestClusterSharding_UpdateServerName(t *testing.T) {
 	})
 
 	distributionAfter := sharding.GetDistribution()
-	assert.Equal(t, 2, len(distributionAfter))
+	assert.Len(t, distributionAfter, 2)
 
 	_, ok = distributionAfter["https://kubernetes.default.svc"]
 	assert.False(t, ok) // the old server name should not be present anymore
@@ -249,6 +268,12 @@ func TestClusterSharding_IsManagedCluster(t *testing.T) {
 					ID:     "2",
 					Server: "https://127.0.0.1:6443",
 				},
+			},
+		},
+		&v1alpha1.ApplicationList{
+			Items: []v1alpha1.Application{
+				createApp("app2", "https://127.0.0.1:6443"),
+				createApp("app1", "https://kubernetes.default.svc"),
 			},
 		},
 	)
@@ -278,6 +303,12 @@ func TestClusterSharding_IsManagedCluster(t *testing.T) {
 				},
 			},
 		},
+		&v1alpha1.ApplicationList{
+			Items: []v1alpha1.Application{
+				createApp("app2", "https://127.0.0.1:6443"),
+				createApp("app1", "https://kubernetes.default.svc"),
+			},
+		},
 	)
 
 	assert.False(t, sharding1.IsManagedCluster(&v1alpha1.Cluster{
@@ -289,7 +320,6 @@ func TestClusterSharding_IsManagedCluster(t *testing.T) {
 		ID:     "2",
 		Server: "https://127.0.0.1:6443",
 	}))
-
 }
 
 func TestClusterSharding_ClusterShardOfResourceShouldNotBeChanged(t *testing.T) {
@@ -327,9 +357,15 @@ func TestClusterSharding_ClusterShardOfResourceShouldNotBeChanged(t *testing.T) 
 				*clusterWithToBigValue,
 			},
 		},
+		&v1alpha1.ApplicationList{
+			Items: []v1alpha1.Application{
+				createApp("app2", "https://127.0.0.1:6443"),
+				createApp("app1", "https://kubernetes.default.svc"),
+			},
+		},
 	)
 	distribution := sharding.GetDistribution()
-	assert.Equal(t, 3, len(distribution))
+	assert.Len(t, distribution, 3)
 
 	assert.Nil(t, sharding.Clusters[clusterWithNil.Server].Shard)
 

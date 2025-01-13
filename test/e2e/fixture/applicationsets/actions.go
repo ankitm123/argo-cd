@@ -7,21 +7,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/argoproj/argo-cd/v2/test/e2e/fixture"
+	"github.com/argoproj/argo-cd/v3/test/e2e/fixture"
 
 	log "github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/rbac/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/argoproj/argo-cd/v2/common"
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	"github.com/argoproj/argo-cd/v2/test/e2e/fixture/applicationsets/utils"
-	"github.com/argoproj/argo-cd/v2/util/clusterauth"
+	"github.com/argoproj/argo-cd/v3/common"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/test/e2e/fixture/applicationsets/utils"
+	"github.com/argoproj/argo-cd/v3/util/clusterauth"
 )
 
 // this implements the "when" part of given/when/then
@@ -79,15 +79,13 @@ func (a *Actions) SwitchToArgoCDNamespace() *Actions {
 // CreateClusterSecret creates a faux cluster secret, with the given cluster server and cluster name (this cluster
 // will not actually be used by the Argo CD controller, but that's not needed for our E2E tests)
 func (a *Actions) CreateClusterSecret(secretName string, clusterName string, clusterServer string) *Actions {
-
 	fixtureClient := utils.GetE2EFixtureK8sClient()
 
 	var serviceAccountName string
 
 	// Look for a service account matching '*application-controller*'
-	err := wait.Poll(500*time.Millisecond, 30*time.Second, func() (bool, error) {
-
-		serviceAccountList, err := fixtureClient.KubeClientset.CoreV1().ServiceAccounts(fixture.TestNamespace()).List(context.Background(), metav1.ListOptions{})
+	err := wait.PollUntilContextTimeout(context.Background(), 500*time.Millisecond, 30*time.Second, false, func(ctx context.Context) (bool, error) {
+		serviceAccountList, err := fixtureClient.KubeClientset.CoreV1().ServiceAccounts(fixture.TestNamespace()).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			fmt.Println("Unable to retrieve ServiceAccount list", err)
 			return false, nil
@@ -154,7 +152,6 @@ func (a *Actions) CreateClusterSecret(secretName string, clusterName string, clu
 
 // DeleteClusterSecret deletes a faux cluster secret
 func (a *Actions) DeleteClusterSecret(secretName string) *Actions {
-
 	err := utils.GetE2EFixtureK8sClient().KubeClientset.CoreV1().Secrets(fixture.TestNamespace()).Delete(context.Background(), secretName, metav1.DeleteOptions{})
 
 	a.describeAction = fmt.Sprintf("deleting cluster Secret '%s'", secretName)
@@ -166,7 +163,6 @@ func (a *Actions) DeleteClusterSecret(secretName string) *Actions {
 
 // DeleteConfigMap deletes a faux cluster secret
 func (a *Actions) DeleteConfigMap(configMapName string) *Actions {
-
 	err := utils.GetE2EFixtureK8sClient().KubeClientset.CoreV1().ConfigMaps(fixture.TestNamespace()).Delete(context.Background(), configMapName, metav1.DeleteOptions{})
 
 	a.describeAction = fmt.Sprintf("deleting configMap '%s'", configMapName)
@@ -178,7 +174,6 @@ func (a *Actions) DeleteConfigMap(configMapName string) *Actions {
 
 // DeletePlacementDecision deletes a faux cluster secret
 func (a *Actions) DeletePlacementDecision(placementDecisionName string) *Actions {
-
 	err := utils.GetE2EFixtureK8sClient().DynamicClientset.Resource(pdGVR).Namespace(fixture.TestNamespace()).Delete(context.Background(), placementDecisionName, metav1.DeleteOptions{})
 
 	a.describeAction = fmt.Sprintf("deleting placement decision '%s'", placementDecisionName)
@@ -247,9 +242,9 @@ func (a *Actions) CreatePlacementRoleAndRoleBinding() *Actions {
 
 	var err error
 
-	_, err = fixtureClient.KubeClientset.RbacV1().Roles(fixture.TestNamespace()).Create(context.Background(), &v1.Role{
+	_, err = fixtureClient.KubeClientset.RbacV1().Roles(fixture.TestNamespace()).Create(context.Background(), &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{Name: "placement-role", Namespace: fixture.TestNamespace()},
-		Rules: []v1.PolicyRule{
+		Rules: []rbacv1.PolicyRule{
 			{
 				Verbs:     []string{"get", "list", "watch"},
 				APIGroups: []string{"cluster.open-cluster-management.io"},
@@ -263,16 +258,16 @@ func (a *Actions) CreatePlacementRoleAndRoleBinding() *Actions {
 
 	if err == nil {
 		_, err = fixtureClient.KubeClientset.RbacV1().RoleBindings(fixture.TestNamespace()).Create(context.Background(),
-			&v1.RoleBinding{
+			&rbacv1.RoleBinding{
 				ObjectMeta: metav1.ObjectMeta{Name: "placement-role-binding", Namespace: fixture.TestNamespace()},
-				Subjects: []v1.Subject{
+				Subjects: []rbacv1.Subject{
 					{
 						Name:      "argocd-applicationset-controller",
 						Namespace: fixture.TestNamespace(),
 						Kind:      "ServiceAccount",
 					},
 				},
-				RoleRef: v1.RoleRef{
+				RoleRef: rbacv1.RoleRef{
 					Kind:     "Role",
 					APIGroup: "rbac.authorization.k8s.io",
 					Name:     "placement-role",
@@ -338,14 +333,14 @@ func (a *Actions) CreatePlacementDecision(placementDecisionName string) *Actions
 	}
 
 	placementDecision := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"metadata": map[string]interface{}{
+		Object: map[string]any{
+			"metadata": map[string]any{
 				"name":      placementDecisionName,
 				"namespace": fixture.TestNamespace(),
 			},
 			"kind":       "PlacementDecision",
 			"apiVersion": "cluster.open-cluster-management.io/v1alpha1",
-			"status":     map[string]interface{}{},
+			"status":     map[string]any{},
 		},
 	}
 
@@ -361,7 +356,7 @@ func (a *Actions) CreatePlacementDecision(placementDecisionName string) *Actions
 	return a
 }
 
-func (a *Actions) StatusUpdatePlacementDecision(placementDecisionName string, clusterList []interface{}) *Actions {
+func (a *Actions) StatusUpdatePlacementDecision(placementDecisionName string, clusterList []any) *Actions {
 	a.context.t.Helper()
 
 	fixtureClient := utils.GetE2EFixtureK8sClient().DynamicClientset
@@ -370,7 +365,7 @@ func (a *Actions) StatusUpdatePlacementDecision(placementDecisionName string, cl
 		placementDecisionName,
 		metav1.GetOptions{})
 
-	placementDecision.Object["status"] = map[string]interface{}{
+	placementDecision.Object["status"] = map[string]any{
 		"decisions": clusterList,
 	}
 
@@ -449,7 +444,6 @@ func (a *Actions) get() (*v1alpha1.ApplicationSet, error) {
 	}
 
 	return &appSet, nil
-
 }
 
 // Update retrieves the latest copy the ApplicationSet, then allows the caller to mutate it via 'toUpdate', with
@@ -461,8 +455,21 @@ func (a *Actions) Update(toUpdate func(*v1alpha1.ApplicationSet)) *Actions {
 
 	var mostRecentError error
 
-	for start := time.Now(); time.Since(start) < timeout; time.Sleep(3 * time.Second) {
-
+	sleepIntervals := []time.Duration{
+		10 * time.Millisecond,
+		20 * time.Millisecond,
+		50 * time.Millisecond,
+		100 * time.Millisecond,
+		200 * time.Millisecond,
+		300 * time.Millisecond,
+		500 * time.Millisecond,
+		1 * time.Second,
+	}
+	sleepIntervalsIdx := -1
+	for start := time.Now(); time.Since(start) < timeout; time.Sleep(sleepIntervals[sleepIntervalsIdx]) {
+		if sleepIntervalsIdx < len(sleepIntervals)-1 {
+			sleepIntervalsIdx++
+		}
 		appSet, err := a.get()
 		mostRecentError = err
 		if err == nil {
@@ -487,12 +494,11 @@ func (a *Actions) Update(toUpdate func(*v1alpha1.ApplicationSet)) *Actions {
 
 			_, err = appSetClientSet.Update(context.Background(), utils.MustToUnstructured(&appSet), metav1.UpdateOptions{})
 
-			if err != nil {
-				mostRecentError = err
-			} else {
+			if err == nil {
 				mostRecentError = nil
 				break
 			}
+			mostRecentError = err
 		}
 	}
 
@@ -527,4 +533,10 @@ func (a *Actions) runCli(args ...string) {
 	a.context.t.Helper()
 	a.lastOutput, a.lastError = fixture.RunCli(args...)
 	a.verifyAction()
+}
+
+func (a *Actions) AddSignedFile(fileName, fileContents string) *Actions {
+	a.context.t.Helper()
+	fixture.AddSignedFile(a.context.path+"/"+fileName, fileContents)
+	return a
 }

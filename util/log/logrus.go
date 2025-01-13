@@ -5,11 +5,11 @@ import (
 	"os"
 	"strings"
 
-	adapter "github.com/bombsimon/logrusr/v2"
+	adapter "github.com/bombsimon/logrusr/v4"
 	"github.com/go-logr/logr"
 	"github.com/sirupsen/logrus"
 
-	"github.com/argoproj/argo-cd/v2/common"
+	"github.com/argoproj/argo-cd/v3/common"
 )
 
 const (
@@ -18,7 +18,7 @@ const (
 )
 
 func NewLogrusLogger(fieldLogger logrus.FieldLogger) logr.Logger {
-	return adapter.New(fieldLogger, adapter.WithFormatter(func(val interface{}) string {
+	return adapter.New(fieldLogger, adapter.WithFormatter(func(val any) any {
 		return fmt.Sprintf("%v", val)
 	}))
 }
@@ -38,13 +38,14 @@ func CreateFormatter(logFormat string) logrus.Formatter {
 	case JsonFormat:
 		formatType = &logrus.JSONFormatter{}
 	case TextFormat:
-		if os.Getenv("FORCE_LOG_COLORS") == "1" {
-			formatType = &logrus.TextFormatter{ForceColors: true}
-		} else {
-			formatType = &logrus.TextFormatter{}
+		formatType = &logrus.TextFormatter{
+			ForceColors:   checkForceLogColors(),
+			FullTimestamp: checkEnableFullTimestamp(),
 		}
 	default:
-		formatType = &logrus.TextFormatter{}
+		formatType = &logrus.TextFormatter{
+			FullTimestamp: checkEnableFullTimestamp(),
+		}
 	}
 
 	return formatType
@@ -56,4 +57,12 @@ func createLogLevel() logrus.Level {
 		level = logrus.InfoLevel
 	}
 	return level
+}
+
+func checkForceLogColors() bool {
+	return strings.ToLower(os.Getenv("FORCE_LOG_COLORS")) == "1"
+}
+
+func checkEnableFullTimestamp() bool {
+	return strings.ToLower(os.Getenv(common.EnvLogFormatEnableFullTimestamp)) == "1"
 }

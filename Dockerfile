@@ -1,12 +1,12 @@
-ARG BASE_IMAGE=docker.io/library/ubuntu:22.04@sha256:0bced47fffa3361afa981854fcabcd4577cd43cebbb808cea2b1f33a3dd7f508
+ARG BASE_IMAGE=docker.io/library/ubuntu:24.04@sha256:3f85b7caad41a95462cf5b787d8a04604c8262cdcdf9a472b8c52ef83375fe15
 ####################################################################################################
 # Builder image
 # Initial stage which pulls prepares build dependencies and CLI tooling we need for our final image
 # Also used as the image in CI jobs so needs all dependencies
 ####################################################################################################
-FROM docker.io/library/golang:1.21.3@sha256:02d7116222536a5cf0fcf631f90b507758b669648e0f20186d2dc94a9b419a9b AS builder
+FROM docker.io/library/golang:1.23.3@sha256:d56c3e08fe5b27729ee3834854ae8f7015af48fd651cd25d1e3bcf3c19830174 AS builder
 
-RUN echo 'deb http://deb.debian.org/debian buster-backports main' >> /etc/apt/sources.list
+RUN echo 'deb http://archive.debian.org/debian buster-backports main' >> /etc/apt/sources.list
 
 RUN apt-get update && apt-get install --no-install-recommends -y \
     openssh-server \
@@ -28,7 +28,7 @@ WORKDIR /tmp
 COPY hack/install.sh hack/tool-versions.sh ./
 COPY hack/installers installers
 
-RUN ./install.sh helm-linux && \
+RUN ./install.sh helm && \
     INSTALL_PATH=/usr/local/bin ./install.sh kustomize
 
 ####################################################################################################
@@ -83,7 +83,7 @@ WORKDIR /home/argocd
 ####################################################################################################
 # Argo CD UI stage
 ####################################################################################################
-FROM --platform=$BUILDPLATFORM docker.io/library/node:21.6.2@sha256:65998e325b06014d4f1417a8a6afb1540d1ac66521cca76f2221a6953947f9ee AS argocd-ui
+FROM --platform=$BUILDPLATFORM docker.io/library/node:23.0.0@sha256:e643c0b70dca9704dff42e12b17f5b719dbe4f95e6392fc2dfa0c5f02ea8044d AS argocd-ui
 
 WORKDIR /src
 COPY ["ui/package.json", "ui/yarn.lock", "./"]
@@ -101,7 +101,7 @@ RUN HOST_ARCH=$TARGETARCH NODE_ENV='production' NODE_ONLINE_ENV='online' NODE_OP
 ####################################################################################################
 # Argo CD Build stage which performs the actual build of Argo CD binaries
 ####################################################################################################
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.21.3@sha256:02d7116222536a5cf0fcf631f90b507758b669648e0f20186d2dc94a9b419a9b AS argocd-build
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.23.3@sha256:d56c3e08fe5b27729ee3834854ae8f7015af48fd651cd25d1e3bcf3c19830174 AS argocd-build
 
 WORKDIR /go/src/github.com/argoproj/argo-cd
 
@@ -140,7 +140,8 @@ RUN ln -s /usr/local/bin/argocd /usr/local/bin/argocd-server && \
     ln -s /usr/local/bin/argocd /usr/local/bin/argocd-dex && \
     ln -s /usr/local/bin/argocd /usr/local/bin/argocd-notifications && \
     ln -s /usr/local/bin/argocd /usr/local/bin/argocd-applicationset-controller && \
-    ln -s /usr/local/bin/argocd /usr/local/bin/argocd-k8s-auth
+    ln -s /usr/local/bin/argocd /usr/local/bin/argocd-k8s-auth && \
+    ln -s /usr/local/bin/argocd /usr/local/bin/argocd-commit-server
 
 USER $ARGOCD_USER_ID
 ENTRYPOINT ["/usr/bin/tini", "--"]

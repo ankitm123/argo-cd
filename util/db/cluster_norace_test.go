@@ -7,24 +7,23 @@ import (
 	"context"
 	"testing"
 
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/argoproj/argo-cd/v2/common"
+	"github.com/argoproj/argo-cd/v3/common"
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	"github.com/argoproj/argo-cd/v2/util/settings"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v3/util/settings"
 )
 
 func TestWatchClusters_CreateRemoveCluster(t *testing.T) {
-
 	// !race:
 	// Intermittent failure when running TestWatchClusters_LocalClusterModifications with -race, likely due to race condition
 	// https://github.com/argoproj/argo-cd/issues/4755
-	emptyArgoCDConfigMap := &v1.ConfigMap{
+	emptyArgoCDConfigMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      common.ArgoCDConfigMapName,
 			Namespace: fakeNamespace,
@@ -34,7 +33,7 @@ func TestWatchClusters_CreateRemoveCluster(t *testing.T) {
 		},
 		Data: map[string]string{},
 	}
-	argoCDSecret := &v1.Secret{
+	argoCDSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      common.ArgoCDSecretName,
 			Namespace: fakeNamespace,
@@ -47,13 +46,13 @@ func TestWatchClusters_CreateRemoveCluster(t *testing.T) {
 			"server.secretkey": nil,
 		},
 	}
-	kubeclientset := fake.NewSimpleClientset(emptyArgoCDConfigMap, argoCDSecret)
+	kubeclientset := fake.NewClientset(emptyArgoCDConfigMap, argoCDSecret)
 	settingsManager := settings.NewSettingsManager(context.Background(), kubeclientset, fakeNamespace)
 	db := NewDB(fakeNamespace, settingsManager, kubeclientset)
 	runWatchTest(t, db, []func(old *v1alpha1.Cluster, new *v1alpha1.Cluster){
 		func(old *v1alpha1.Cluster, new *v1alpha1.Cluster) {
 			assert.Nil(t, old)
-			assert.Equal(t, new.Server, v1alpha1.KubernetesInternalAPIServerAddr)
+			assert.Equal(t, v1alpha1.KubernetesInternalAPIServerAddr, new.Server)
 
 			_, err := db.CreateCluster(context.Background(), &v1alpha1.Cluster{
 				Server: "https://minikube",
@@ -63,24 +62,23 @@ func TestWatchClusters_CreateRemoveCluster(t *testing.T) {
 		},
 		func(old *v1alpha1.Cluster, new *v1alpha1.Cluster) {
 			assert.Nil(t, old)
-			assert.Equal(t, new.Server, "https://minikube")
-			assert.Equal(t, new.Name, "minikube")
+			assert.Equal(t, "https://minikube", new.Server)
+			assert.Equal(t, "minikube", new.Name)
 
 			assert.NoError(t, db.DeleteCluster(context.Background(), "https://minikube"))
 		},
 		func(old *v1alpha1.Cluster, new *v1alpha1.Cluster) {
 			assert.Nil(t, new)
-			assert.Equal(t, old.Server, "https://minikube")
+			assert.Equal(t, "https://minikube", old.Server)
 		},
 	})
 }
 
 func TestWatchClusters_LocalClusterModifications(t *testing.T) {
-
 	// !race:
 	// Intermittent failure when running TestWatchClusters_LocalClusterModifications with -race, likely due to race condition
 	// https://github.com/argoproj/argo-cd/issues/4755
-	emptyArgoCDConfigMap := &v1.ConfigMap{
+	emptyArgoCDConfigMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      common.ArgoCDConfigMapName,
 			Namespace: fakeNamespace,
@@ -90,7 +88,7 @@ func TestWatchClusters_LocalClusterModifications(t *testing.T) {
 		},
 		Data: map[string]string{},
 	}
-	argoCDSecret := &v1.Secret{
+	argoCDSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      common.ArgoCDSecretName,
 			Namespace: fakeNamespace,
@@ -103,13 +101,13 @@ func TestWatchClusters_LocalClusterModifications(t *testing.T) {
 			"server.secretkey": nil,
 		},
 	}
-	kubeclientset := fake.NewSimpleClientset(emptyArgoCDConfigMap, argoCDSecret)
+	kubeclientset := fake.NewClientset(emptyArgoCDConfigMap, argoCDSecret)
 	settingsManager := settings.NewSettingsManager(context.Background(), kubeclientset, fakeNamespace)
 	db := NewDB(fakeNamespace, settingsManager, kubeclientset)
 	runWatchTest(t, db, []func(old *v1alpha1.Cluster, new *v1alpha1.Cluster){
 		func(old *v1alpha1.Cluster, new *v1alpha1.Cluster) {
 			assert.Nil(t, old)
-			assert.Equal(t, new.Server, v1alpha1.KubernetesInternalAPIServerAddr)
+			assert.Equal(t, v1alpha1.KubernetesInternalAPIServerAddr, new.Server)
 
 			_, err := db.CreateCluster(context.Background(), &v1alpha1.Cluster{
 				Server: v1alpha1.KubernetesInternalAPIServerAddr,
@@ -119,14 +117,14 @@ func TestWatchClusters_LocalClusterModifications(t *testing.T) {
 		},
 		func(old *v1alpha1.Cluster, new *v1alpha1.Cluster) {
 			assert.NotNil(t, old)
-			assert.Equal(t, new.Server, v1alpha1.KubernetesInternalAPIServerAddr)
-			assert.Equal(t, new.Name, "some name")
+			assert.Equal(t, v1alpha1.KubernetesInternalAPIServerAddr, new.Server)
+			assert.Equal(t, "some name", new.Name)
 
 			assert.NoError(t, db.DeleteCluster(context.Background(), v1alpha1.KubernetesInternalAPIServerAddr))
 		},
-		func(old *v1alpha1.Cluster, new *v1alpha1.Cluster) {
-			assert.Equal(t, new.Server, v1alpha1.KubernetesInternalAPIServerAddr)
-			assert.Equal(t, new.Name, "in-cluster")
+		func(_ *v1alpha1.Cluster, new *v1alpha1.Cluster) {
+			assert.Equal(t, v1alpha1.KubernetesInternalAPIServerAddr, new.Server)
+			assert.Equal(t, "in-cluster", new.Name)
 		},
 	})
 }
